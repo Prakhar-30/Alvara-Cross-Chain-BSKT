@@ -1,5 +1,11 @@
 # Alvara x Reactive Network - Cross-Chain BSKT Automation PoC
 
+## Summary
+
+This PoC enables Alvara's BSKT (tokenized portfolio) system to operate seamlessly across Base and Ethereum using Reactive Network's event-driven architecture. When users create, contribute to, rebalance, or manage BSKTs on Base, Reactive Smart Contracts (RSCs) automatically detect these events and trigger corresponding actions on Ethereum through a Callback Contract. The RSC acts as a stateless event relay, while the Callback Contract stores all cross-chain state including token mappings, BSKT mirrors, and liquidity tracking. This creates unified liquidity across chains without centralized relayers, enabling real-time cross-chain coordination for portfolio management, fee claiming, emergency controls, and security synchronization.
+
+---
+
 ## Implementation Architecture
 
 ### System Components
@@ -832,5 +838,3 @@ event FeeClaimed(
 event GreyListed(address indexed account);
 event RemovedFromGreyList(address indexed account);
 ```
-
-
