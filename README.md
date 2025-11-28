@@ -1,56 +1,22 @@
 # Alvara x Reactive Network - Cross-Chain BSKT Automation PoC
 
-## Overview
+## Implementation Architecture
 
-This document presents a **Proof of Concept (PoC)** for integrating Alvara Protocol's tokenized portfolio management system (BSKT) with Reactive Network to enable trustless, real-time cross-chain automation between **Base** and **Ethereum**.
+### System Components
 
-### Problem Statement
+**Origin Chain (Base)**:
+- Existing Alvara contracts emit events
+- No modifications to core functionality
 
-Alvara wants to:
-1. **Build baskets across multiple chains** to enhance liquidity and avoid market fragmentation
-2. **Enable real-time event-based cross-chain transactions** using Reactive Network
-3. **Maintain decentralization** without centralized relayers or bridges
+**Reactive Network**:
+- **Reactive Smart Contract (RSC)**: Event listener and transaction relay only
+- No data storage - stateless design
+- Triggers callback functions on destination chain
 
-### Solution Architecture
-
-Using **Reactive Smart Contracts (RSCs)**, we create an event-driven automation layer that:
-- Monitors Solidity events on the origin chain (Base)
-- Executes logic in the Reactive Network
-- Submits transactions to the destination chain (Ethereum)
-
-This enables **trustless cross-chain coordination** for BSKT operations across multiple EVM chains.
-
----
-
-## What is Reactive Network?
-
-**Reactive Network** is Web3's first network for decentralized, trustless cross-chain automation. It features:
-
-- **Reactive Smart Contracts (RSCs)**: Unlike standard EVM contracts, RSCs are triggered by Solidity events from other chains, not direct user input
-- **Event-driven workflows**: Enables if-this-then-that logic across chains
-- **Trustless execution**: No centralized relayers or bridge operators
-- **Cross-chain automation**: `[Event on Chain A] → [RSC Logic] → [Transaction on Chain B]`
-
----
-
-## Architecture Components
-
-### 1. Origin Chain (Base)
-- Existing Alvara contracts (Factory, BSKT, BSKTPair)
-- Emits events for cross-chain actions
-- No modifications to core functionality required
-
-### 2. Reactive Network
-- **Reactive Smart Contract (RSC)**: Subscribes to Base events
-- Token address mapping (Base ↔ Ethereum)
-- BSKT mirror registry
-- Cross-chain coordination logic
-
-### 3. Destination Chain (Ethereum)
-- Existing Alvara contracts (Factory, BSKT, BSKTPair)
-- **New Callback Contract**: Receives calls from RSC
+**Destination Chain (Ethereum)**:
+- Existing Alvara contracts
+- **New Callback Contract**: Stores all cross-chain state and mappings
 - Executes destination-side logic
-- Maintains cross-chain state synchronization
 
 ---
 
@@ -198,13 +164,15 @@ sequenceDiagram
     
     Factory_Base-->>Reactive: Event: BSKTCreated detected
     Reactive->>RSC: Trigger on BSKTCreated event
-    RSC->>RSC: Extract: bsktAddress, tokens[], weights[], creator, id, description
-    RSC->>RSC: Map Base token addresses to Ethereum equivalents
-    RSC->>Callback_ETH: createMirrorBSKT(originBSKT, tokens[], weights[], creator, id)
+    RSC->>RSC: Parse event data (no storage)
+    RSC->>Callback_ETH: createMirrorBSKT(originBSKT, baseTokens[], weights[], creator, id, name, symbol)
     
-    Callback_ETH->>Factory_ETH: createBSKT(name, tokens[], weights[], etc.)
+    Callback_ETH->>Callback_ETH: Map Base tokens to Ethereum tokens
+    Callback_ETH->>Callback_ETH: Validate token mappings exist
+    Callback_ETH->>Factory_ETH: createBSKT(name, ethTokens[], weights[], etc.)
     Factory_ETH->>BSKT_ETH: Deploy mirrored BSKT
     Callback_ETH->>Callback_ETH: Store mapping: baseBSKT -> ethBSKT
+    Callback_ETH->>Callback_ETH: Store reverse mapping: ethBSKT -> baseBSKT
     Callback_ETH->>Callback_ETH: Emit MirrorBSKTCreated(baseBSKT, ethBSKT)
     
     Note over User,Factory_ETH: Scenario 2: Cross-Chain Contribution Aggregation
@@ -215,15 +183,14 @@ sequenceDiagram
     
     BSKT_Base-->>Reactive: Event: ContributedToBSKT detected
     Reactive->>RSC: Trigger on ContributedToBSKT
-    RSC->>RSC: Extract: bsktAddress, user, contributionAmount
-    RSC->>RSC: Lookup mirrored BSKT on Ethereum
-    RSC->>RSC: Calculate proportional share for liquidity sync
-    RSC->>Callback_ETH: syncContribution(ethBSKT, user, amount, originChain)
+    RSC->>RSC: Parse event data (no storage)
+    RSC->>Callback_ETH: syncContribution(baseBSKT, user, amount, amountAfterFee, originChain)
     
-    Callback_ETH->>Callback_ETH: Update aggregated liquidity metrics
+    Callback_ETH->>Callback_ETH: Lookup ethBSKT from baseBSKT mapping
+    Callback_ETH->>Callback_ETH: Update liquidityState[ethBSKT].totalBaseChain += amount
     Callback_ETH->>BSKT_ETH: updateCrossChainLiquidity(totalBase, totalEth)
     BSKT_ETH->>BSKT_ETH: Store cross-chain liquidity state
-    Callback_ETH->>Callback_ETH: Emit ContributionSynced(baseBSKT, ethBSKT, amount)
+    Callback_ETH->>Callback_ETH: Emit ContributionSynced(baseBSKT, ethBSKT, user, amount, newTotalBase, newTotalEth)
     
     Note over User,Factory_ETH: Scenario 3: Cross-Chain Rebalancing Coordination
     
@@ -234,15 +201,15 @@ sequenceDiagram
     
     BSKT_Base-->>Reactive: Event: BSKTRebalanced detected
     Reactive->>RSC: Trigger on BSKTRebalanced
-    RSC->>RSC: Extract: bsktAddress, newTokens[], newWeights[]
-    RSC->>RSC: Map Base tokens to Ethereum equivalents
-    RSC->>RSC: Lookup mirrored BSKT
-    RSC->>Callback_ETH: rebalanceMirrorBSKT(ethBSKT, newTokens[], newWeights[], sigs)
+    RSC->>RSC: Parse event data (no storage)
+    RSC->>Callback_ETH: rebalanceMirrorBSKT(baseBSKT, baseOldTokens[], oldWeights[], baseNewTokens[], newWeights[], originChain)
     
-    Callback_ETH->>Callback_ETH: Verify cross-chain rebalance authorization
-    Callback_ETH->>BSKT_ETH: rebalance(newTokens[], newWeights[], minAmounts, sigs, deadline)
+    Callback_ETH->>Callback_ETH: Lookup ethBSKT from baseBSKT mapping
+    Callback_ETH->>Callback_ETH: Map Base tokens to Ethereum tokens using tokenMapping
+    Callback_ETH->>Callback_ETH: Validate all token mappings exist
+    Callback_ETH->>BSKT_ETH: rebalance(ethNewTokens[], newWeights[], minAmounts, sigs, deadline)
     BSKT_ETH->>BSKT_ETH: Execute rebalancing on Ethereum
-    Callback_ETH->>Callback_ETH: Emit MirrorRebalanceCompleted(baseBSKT, ethBSKT)
+    Callback_ETH->>Callback_ETH: Emit MirrorRebalanceCompleted(baseBSKT, ethBSKT, ethNewTokens[], newWeights[])
     
     Note over User,Factory_ETH: Scenario 4: Cross-Chain Withdrawal Coordination
     
@@ -252,13 +219,13 @@ sequenceDiagram
     
     BSKT_Base-->>Reactive: Event: WithdrawnFromBSKT detected
     Reactive->>RSC: Trigger on WithdrawnFromBSKT
-    RSC->>RSC: Extract: bsktAddress, user, lpAmount, tokens[], amounts[]
-    RSC->>RSC: Check if user has LP on mirrored BSKT
-    RSC->>Callback_ETH: syncWithdrawal(ethBSKT, user, lpAmount, originChain)
+    RSC->>RSC: Parse event data (no storage)
+    RSC->>Callback_ETH: syncWithdrawal(baseBSKT, user, lpAmount, baseTokens[], amounts[], originChain)
     
-    Callback_ETH->>Callback_ETH: Update cross-chain liquidity tracking
+    Callback_ETH->>Callback_ETH: Lookup ethBSKT from baseBSKT mapping
+    Callback_ETH->>Callback_ETH: Update liquidityState[ethBSKT].totalBaseChain -= lpAmount
     Callback_ETH->>BSKT_ETH: updateCrossChainLiquidity(totalBase, totalEth)
-    Callback_ETH->>Callback_ETH: Emit WithdrawalSynced(baseBSKT, ethBSKT, user, amount)
+    Callback_ETH->>Callback_ETH: Emit WithdrawalSynced(baseBSKT, ethBSKT, user, lpAmount, newTotalBase, newTotalEth)
     
     Note over User,Factory_ETH: Scenario 5: Cross-Chain Management Fee Claiming
     
@@ -268,14 +235,15 @@ sequenceDiagram
     
     BSKT_Base-->>Reactive: Event: FeeClaimed detected
     Reactive->>RSC: Trigger on FeeClaimed
-    RSC->>RSC: Extract: bsktAddress, manager, lpAmount, ethAmount
-    RSC->>RSC: Calculate proportional fee on mirrored BSKT
-    RSC->>Callback_ETH: triggerFeeClaim(ethBSKT, manager, proportionalAmount)
+    RSC->>RSC: Parse event data (no storage)
+    RSC->>Callback_ETH: triggerFeeClaim(baseBSKT, manager, lpAmount, ethAmount, amounts[], originChain)
     
+    Callback_ETH->>Callback_ETH: Lookup ethBSKT from baseBSKT mapping
     Callback_ETH->>Callback_ETH: Verify manager authorization
-    Callback_ETH->>BSKT_ETH: claimFee(amount, minAmounts, sig, deadline, false, false)
+    Callback_ETH->>Callback_ETH: Calculate proportional fee based on liquidityState
+    Callback_ETH->>BSKT_ETH: claimFee(proportionalAmount, minAmounts, sig, deadline, false, false)
     BSKT_ETH->>BSKT_ETH: Execute fee claim on Ethereum
-    Callback_ETH->>Callback_ETH: Emit CrossChainFeeClaimCompleted(baseBSKT, ethBSKT)
+    Callback_ETH->>Callback_ETH: Emit CrossChainFeeClaimCompleted(baseBSKT, ethBSKT, manager, proportionalAmount)
     
     Note over User,Factory_ETH: Scenario 6: Emergency Cross-Chain Pause
     
@@ -285,14 +253,14 @@ sequenceDiagram
     
     Factory_Base-->>Reactive: Event: Paused detected
     Reactive->>RSC: Trigger on Paused event
-    RSC->>RSC: Extract: pausedContract, account
-    RSC->>RSC: Verify critical pause scenario
-    RSC->>Callback_ETH: emergencyPause(reason, originChain)
+    RSC->>RSC: Parse event data (no storage)
+    RSC->>Callback_ETH: emergencyPause(reason, originChain, initiator)
     
-    Callback_ETH->>Callback_ETH: Verify pause authorization
+    Callback_ETH->>Callback_ETH: Store isEmergencyPaused = true
+    Callback_ETH->>Callback_ETH: Store pause reason and timestamp
     Callback_ETH->>Factory_ETH: pause()
     Factory_ETH->>Factory_ETH: _pause() - Block all operations
-    Callback_ETH->>Callback_ETH: Emit CrossChainPauseExecuted(originChain, timestamp)
+    Callback_ETH->>Callback_ETH: Emit CrossChainPauseExecuted(originChain, initiator, reason, timestamp)
     
     Note over User,Factory_ETH: Scenario 7: Cross-Chain Token Greylist Synchronization
     
@@ -302,14 +270,14 @@ sequenceDiagram
     
     BSKT_Base-->>Reactive: Event: GreyListed detected
     Reactive->>RSC: Trigger on GreyListed
-    RSC->>RSC: Extract: greylistedAddress
-    RSC->>RSC: Verify address across all chain BSKTs
-    RSC->>Callback_ETH: syncGreylist(address, isGreylisted=true)
+    RSC->>RSC: Parse event data (no storage)
+    RSC->>Callback_ETH: syncGreylist(account, shouldGreylist=true, originChain)
     
-    Callback_ETH->>Callback_ETH: Verify greylist sync authorization
-    Callback_ETH->>BSKT_ETH: addToGreyList(address)
+    Callback_ETH->>Callback_ETH: Store isGreylisted[account] = true
+    Callback_ETH->>Callback_ETH: Store greylistTimestamp[account] = block.timestamp
+    Callback_ETH->>BSKT_ETH: addToGreyList(account)
     BSKT_ETH->>BSKT_ETH: Block address on Ethereum chain
-    Callback_ETH->>Callback_ETH: Emit GreylistSynced(address, chains[])
+    Callback_ETH->>Callback_ETH: Emit GreylistSynced(account, true, originChain, timestamp)
 ```
 
 ---
@@ -319,29 +287,10 @@ sequenceDiagram
 ### 1. Reactive Smart Contract (RSC) on Reactive Network
 
 **Core Responsibilities**:
-- Subscribe to all relevant events from Base contracts
-- Maintain token address mappings between chains
-- Store BSKT mirror registry (Base BSKT address → Ethereum BSKT address)
-- Implement cross-chain coordination business logic
-- Execute callback transactions on destination chains
-
-**Key Data Structures**:
-```solidity
-// Token address mapping: Base → Ethereum
-mapping(address => address) public tokenMapping;
-
-// BSKT mirror registry
-mapping(address => address) public bsktMirrors; // baseBSKT → ethBSKT
-
-// Cross-chain liquidity tracking
-mapping(address => CrossChainLiquidity) public liquidityState;
-
-struct CrossChainLiquidity {
-    uint256 totalBaseChain;
-    uint256 totalEthereumChain;
-    uint256 lastUpdateBlock;
-}
-```
+- Subscribe to events from Base contracts
+- Parse event data and extract parameters
+- Execute callback transactions on Ethereum Callback Contract
+- **NO DATA STORAGE** - Purely stateless event relay
 
 **Event Subscriptions**:
 ```solidity
@@ -360,83 +309,203 @@ struct CrossChainLiquidity {
 - RemovedFromGreyList
 ```
 
+**Processing Flow**:
+1. Detect event on Base
+2. Parse event parameters
+3. Call corresponding function on Callback Contract (Ethereum)
+4. Pass all data as function parameters
+
 ---
 
 ### 2. Callback Contract on Ethereum
 
 **New Contract Required**: `AlvaraReactiveCallback.sol`
 
-This contract serves as the entry point for all cross-chain operations initiated by the RSC.
+This contract serves as the entry point for all cross-chain operations and **stores all cross-chain state**.
+
+**State Variables & Data Structures**:
+
+```solidity
+// Token address mapping: Base → Ethereum
+mapping(address => address) public tokenMapping;
+
+// Reverse mapping: Ethereum → Base
+mapping(address => address) public reverseTokenMapping;
+
+// BSKT mirror registry
+mapping(address => address) public bsktMirrors; // baseBSKT → ethBSKT
+mapping(address => address) public reverseBsktMirrors; // ethBSKT → baseBSKT
+
+// Cross-chain liquidity tracking
+mapping(address => CrossChainLiquidity) public liquidityState;
+
+struct CrossChainLiquidity {
+    uint256 totalBaseChain;
+    uint256 totalEthereumChain;
+    uint256 lastUpdateBlock;
+    uint256 lastUpdateTimestamp;
+}
+
+// Token metadata for validation
+struct TokenInfo {
+    string symbol;
+    uint8 decimals;
+    bool isActive;
+}
+mapping(address => TokenInfo) public baseTokenInfo;
+mapping(address => TokenInfo) public ethTokenInfo;
+
+// Greylist synchronization tracking
+mapping(address => bool) public isGreylisted;
+mapping(address => uint256) public greylistTimestamp;
+
+// Emergency pause state
+bool public isEmergencyPaused;
+uint256 public emergencyPauseTimestamp;
+string public emergencyPauseReason;
+
+// Access control
+address public rscAddress;
+address public factoryAddress;
+address public owner;
+```
 
 **Required Functions**:
 
 ```solidity
+// ============================================
 // BSKT Lifecycle Management
+// ============================================
+
 function createMirrorBSKT(
     address originBSKT,
-    address[] calldata tokens,
-    uint256[] calldata weights,
+    address[] calldata baseTokens,
+    address[] calldata baseWeights,
     address creator,
-    string calldata id
+    string calldata id,
+    string calldata name,
+    string calldata symbol
 ) external onlyRSC returns (address mirroredBSKT);
 
+// ============================================
+// Token Mapping Management
+// ============================================
+
+function addTokenMapping(
+    address baseToken,
+    address ethToken,
+    string calldata symbol,
+    uint8 decimals
+) external onlyOwner;
+
+function getEthereumToken(address baseToken) external view returns (address);
+
+function getBaseToken(address ethToken) external view returns (address);
+
+function mapTokenArray(
+    address[] calldata baseTokens
+) external view returns (address[] memory ethTokens);
+
+// ============================================
 // Liquidity Synchronization
+// ============================================
+
 function syncContribution(
-    address ethBSKT,
+    address baseBSKT,
     address user,
     uint256 amount,
+    uint256 amountAfterFee,
     uint256 originChain
 ) external onlyRSC;
 
 function syncWithdrawal(
-    address ethBSKT,
+    address baseBSKT,
     address user,
     uint256 lpAmount,
+    address[] calldata tokens,
+    uint256[] calldata amounts,
     uint256 originChain
 ) external onlyRSC;
 
-function updateCrossChainLiquidity(
-    address bskt,
+function getLiquidityState(
+    address bskt
+) external view returns (
     uint256 totalBase,
-    uint256 totalEth
-) external onlyRSC;
+    uint256 totalEth,
+    uint256 lastUpdate
+);
 
+// ============================================
 // Portfolio Management
+// ============================================
+
 function rebalanceMirrorBSKT(
-    address ethBSKT,
-    address[] calldata newTokens,
+    address baseBSKT,
+    address[] calldata baseOldTokens,
+    uint256[] calldata oldWeights,
+    address[] calldata baseNewTokens,
     uint256[] calldata newWeights,
-    bytes[] calldata signatures
+    uint256 originChain
 ) external onlyRSC;
 
+// ============================================
 // Fee Management
+// ============================================
+
 function triggerFeeClaim(
-    address ethBSKT,
+    address baseBSKT,
     address manager,
-    uint256 proportionalAmount
+    uint256 lpAmount,
+    uint256 ethAmount,
+    uint256[] calldata amounts,
+    uint256 originChain
 ) external onlyRSC;
 
+// ============================================
 // Emergency Controls
+// ============================================
+
 function emergencyPause(
     string calldata reason,
-    uint256 originChain
+    uint256 originChain,
+    address initiator
 ) external onlyRSC;
 
 function emergencyUnpause(
     string calldata reason,
+    uint256 originChain,
+    address initiator
+) external onlyRSC;
+
+function getEmergencyState() external view returns (
+    bool isPaused,
+    uint256 timestamp,
+    string memory reason
+);
+
+// ============================================
+// Security Synchronization
+// ============================================
+
+function syncGreylist(
+    address account,
+    bool shouldGreylist,
     uint256 originChain
 ) external onlyRSC;
 
-// Security Synchronization
-function syncGreylist(
-    address account,
-    bool isGreylisted
-) external onlyRSC;
+function isAddressGreylisted(address account) external view returns (bool);
 
-// Administrative
+// ============================================
+// Administrative Functions
+// ============================================
+
 function setRSCAddress(address rsc) external onlyOwner;
+
 function setFactoryAddress(address factory) external onlyOwner;
+
 function getBSKTMirror(address originBSKT) external view returns (address);
+
+function getOriginBSKT(address mirrorBSKT) external view returns (address);
 ```
 
 **Access Control**:
@@ -450,18 +519,84 @@ modifier onlyOwner() {
     require(msg.sender == owner, "Unauthorized: Only owner can call");
     _;
 }
+
+modifier whenNotEmergencyPaused() {
+    require(!isEmergencyPaused, "Emergency pause active");
+    _;
+}
 ```
 
 **Events**:
 ```solidity
-event MirrorBSKTCreated(address indexed originBSKT, address indexed mirroredBSKT, uint256 chainId);
-event ContributionSynced(address indexed baseBSKT, address indexed ethBSKT, uint256 amount);
-event WithdrawalSynced(address indexed baseBSKT, address indexed ethBSKT, address user, uint256 amount);
-event MirrorRebalanceCompleted(address indexed baseBSKT, address indexed ethBSKT);
-event CrossChainFeeClaimCompleted(address indexed baseBSKT, address indexed ethBSKT);
-event CrossChainPauseExecuted(uint256 originChain, uint256 timestamp);
-event CrossChainUnpauseExecuted(uint256 originChain, uint256 timestamp);
-event GreylistSynced(address indexed account, uint256[] chains);
+event MirrorBSKTCreated(
+    address indexed originBSKT,
+    address indexed mirroredBSKT,
+    uint256 originChain,
+    uint256 timestamp
+);
+
+event TokenMappingAdded(
+    address indexed baseToken,
+    address indexed ethToken,
+    string symbol
+);
+
+event ContributionSynced(
+    address indexed baseBSKT,
+    address indexed ethBSKT,
+    address indexed user,
+    uint256 amount,
+    uint256 newTotalBase,
+    uint256 newTotalEth
+);
+
+event WithdrawalSynced(
+    address indexed baseBSKT,
+    address indexed ethBSKT,
+    address indexed user,
+    uint256 lpAmount,
+    uint256 newTotalBase,
+    uint256 newTotalEth
+);
+
+event MirrorRebalanceCompleted(
+    address indexed baseBSKT,
+    address indexed ethBSKT,
+    address[] newTokens,
+    uint256[] newWeights
+);
+
+event CrossChainFeeClaimCompleted(
+    address indexed baseBSKT,
+    address indexed ethBSKT,
+    address indexed manager,
+    uint256 lpAmount
+);
+
+event CrossChainPauseExecuted(
+    uint256 originChain,
+    address initiator,
+    string reason,
+    uint256 timestamp
+);
+
+event CrossChainUnpauseExecuted(
+    uint256 originChain,
+    address initiator,
+    string reason,
+    uint256 timestamp
+);
+
+event GreylistSynced(
+    address indexed account,
+    bool isGreylisted,
+    uint256 originChain,
+    uint256 timestamp
+);
+
+event RSCAddressUpdated(address indexed oldRSC, address indexed newRSC);
+
+event FactoryAddressUpdated(address indexed oldFactory, address indexed newFactory);
 ```
 
 ---
@@ -524,401 +659,111 @@ function getCallbackContract() external view returns (address) {
 event CallbackContractUpdated(address indexed newCallback);
 ```
 
----
+## Prerequisites for Callback Contract Deployment
 
-## Token Address Mapping Strategy
+### 1. Token Address Mappings
 
-To enable cross-chain operations, the RSC must maintain a mapping of equivalent tokens across Base and Ethereum.
+Before deployment, prepare comprehensive token mappings between Base and Ethereum:
 
-### Mapping Structure:
+**Required Mappings**:
 
+| Token Symbol | Base Address | Ethereum Address | Decimals | Status |
+|-------------|--------------|------------------|----------|---------|
+| WETH | 0x4200000000000000000000000000000000000006 | 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 | 18 | Active |
+| USDC | 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 | 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 | 6 | Active |
+| ALVA | [Base ALVA Address] | [Ethereum ALVA Address] | 18 | Active |
+
+**Setup Process**:
 ```solidity
-struct TokenPair {
-    address baseAddress;
-    address ethereumAddress;
-    string symbol;
-    bool isActive;
-}
-
-mapping(bytes32 => TokenPair) public tokenMappings; // keccak256(symbol) => TokenPair
-```
-
-### Example Mappings:
-
-| Token Symbol | Base Address | Ethereum Address |
-|-------------|--------------|------------------|
-| WETH | 0x4200...0006 | 0xC02a...3000 |
-| USDC | 0x833...D6e0 | 0xA0b8...c20 |
-| ALVA | 0x... | 0x... |
-
-### Adding New Token Mappings:
-
-```solidity
-function addTokenMapping(
-    string calldata symbol,
-    address baseAddress,
-    address ethAddress
-) external onlyOwner {
-    bytes32 key = keccak256(abi.encodePacked(symbol));
-    tokenMappings[key] = TokenPair({
-        baseAddress: baseAddress,
-        ethereumAddress: ethAddress,
-        symbol: symbol,
-        isActive: true
-    });
-    emit TokenMappingAdded(symbol, baseAddress, ethAddress);
+// In Callback Contract initialization or setup function
+function setupTokenMappings() external onlyOwner {
+    addTokenMapping(
+        0x4200000000000000000000000000000000000006, // Base WETH
+        0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // Ethereum WETH
+        "WETH",
+        18
+    );
+    
+    addTokenMapping(
+        0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913, // Base USDC
+        0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48, // Ethereum USDC
+        "USDC",
+        6
+    );
+    
+    // Add all other tokens that will be used in BSKTs
 }
 ```
 
----
+### 2. RSC Address Configuration
 
-## Security Considerations
+The Callback Contract must know the authorized RSC address:
 
-### 1. Authorization & Access Control
-
-**RSC Authorization**:
-- Only the authorized RSC address can call callback functions
-- Use `onlyRSC` modifier on all callback functions
-- Admin can update RSC address if needed
-
-**Multi-Sig Recommendations**:
-- Set callback contract address via multi-sig
-- Emergency pause should require multi-sig on critical operations
-- RSC address updates should go through governance
-
-### 2. Event Validation
-
-**RSC Must Validate**:
-- Event source contract address
-- Event signature matches expected format
-- Block confirmations before acting (prevent reorg attacks)
-- Rate limiting on high-frequency events
-
-**Example Validation**:
 ```solidity
-function validateEvent(
-    address sourceContract,
-    uint256 blockNumber,
-    bytes32 eventSignature
-) internal view returns (bool) {
-    require(sourceContract == trustedBSKTAddress, "Untrusted source");
-    require(block.number - blockNumber >= MIN_CONFIRMATIONS, "Insufficient confirmations");
-    require(eventSignature == BSKT_CREATED_SIGNATURE, "Invalid event");
+// Set during deployment or initialization
+function setRSCAddress(address _rsc) external onlyOwner {
+    require(_rsc != address(0), "Invalid RSC address");
+    rscAddress = _rsc;
+    emit RSCAddressUpdated(address(0), _rsc);
+}
+```
+
+### 3. Factory Contract Reference
+
+Link to the Ethereum Factory contract:
+
+```solidity
+function setFactoryAddress(address _factory) external onlyOwner {
+    require(_factory != address(0), "Invalid factory address");
+    require(AddressUpgradeable.isContract(_factory), "Factory must be contract");
+    factoryAddress = _factory;
+    emit FactoryAddressUpdated(address(0), _factory);
+}
+```
+
+### 4. Access Control Setup
+
+Configure multi-sig or governance for critical operations:
+
+**Recommended Setup**:
+- Owner: Multi-sig wallet (3/5 or 4/7)
+- RSC Address: Reactive Network RSC contract
+- Factory: Alvara Factory on Ethereum
+
+### 5. Initial State Validation
+
+Before going live, verify:
+
+```solidity
+// Validation checklist
+function validateSetup() external view returns (bool) {
+    require(rscAddress != address(0), "RSC not set");
+    require(factoryAddress != address(0), "Factory not set");
+    require(owner != address(0), "Owner not set");
+    
+    // Verify at least basic tokens are mapped
+    require(tokenMapping[BASE_WETH] != address(0), "WETH mapping missing");
+    require(tokenMapping[BASE_USDC] != address(0), "USDC mapping missing");
+    require(tokenMapping[BASE_ALVA] != address(0), "ALVA mapping missing");
+    
     return true;
 }
 ```
 
-### 3. Reentrancy Protection
-
-All callback functions must use `nonReentrant` modifier:
-```solidity
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-
-contract AlvaraReactiveCallback is ReentrancyGuard {
-    function syncContribution(...) external onlyRSC nonReentrant {
-        // Implementation
-    }
-}
-```
-
-### 4. Chain ID Verification
-
-Validate operations are coming from expected chains:
-```solidity
-uint256 public constant BASE_CHAIN_ID = 8453;
-uint256 public constant ETHEREUM_CHAIN_ID = 1;
-
-function validateChainId(uint256 originChain) internal pure {
-    require(
-        originChain == BASE_CHAIN_ID || originChain == ETHEREUM_CHAIN_ID,
-        "Invalid origin chain"
-    );
-}
-```
-
-### 5. Rate Limiting
-
-Implement rate limits to prevent spam or attacks:
-```solidity
-mapping(address => uint256) public lastOperationTimestamp;
-uint256 public constant OPERATION_COOLDOWN = 60; // seconds
-
-modifier rateLimited(address user) {
-    require(
-        block.timestamp >= lastOperationTimestamp[user] + OPERATION_COOLDOWN,
-        "Rate limit exceeded"
-    );
-    lastOperationTimestamp[user] = block.timestamp;
-    _;
-}
-```
-
----
-
-## Gas Optimization Strategies
-
-### 1. Batch Operations
-
-Instead of processing each event individually, batch operations where possible:
-```solidity
-function syncMultipleContributions(
-    address[] calldata ethBSKTs,
-    address[] calldata users,
-    uint256[] calldata amounts
-) external onlyRSC {
-    require(ethBSKTs.length == users.length, "Length mismatch");
-    
-    for (uint256 i = 0; i < ethBSKTs.length; i++) {
-        _syncContribution(ethBSKTs[i], users[i], amounts[i]);
-    }
-}
-```
-
-### 2. Storage Optimization
-
-Use packed structs to minimize storage slots:
-```solidity
-struct PackedLiquidityState {
-    uint128 totalBase;      // Sufficient for most use cases
-    uint128 totalEthereum;  // Sufficient for most use cases
-    uint64 lastUpdate;      // Timestamp
-}
-```
-
-### 3. Event Indexing
-
-Properly index events for efficient querying:
-```solidity
-event ContributionSynced(
-    address indexed baseBSKT,
-    address indexed ethBSKT,
-    address indexed user,
-    uint256 amount,
-    uint256 timestamp
-);
-```
-
----
-
-## Testing Strategy
-
-### 1. Unit Tests
-
-Test individual components in isolation:
-- RSC event parsing logic
-- Token address mapping
-- Callback function execution
-- Access control mechanisms
-
-### 2. Integration Tests
-
-Test complete flows across components:
-- BSKT creation on Base → Mirror creation on Ethereum
-- Contribution on Base → Liquidity sync on Ethereum
-- Rebalance coordination across chains
-- Emergency pause propagation
-
-### 3. End-to-End Tests
-
-Simulate real-world scenarios:
-- Deploy contracts on Base testnet (Sepolia) and Ethereum testnet (Sepolia)
-- Execute full cross-chain workflows
-- Verify state consistency across chains
-- Test failure scenarios and recovery
-
-### 4. Stress Tests
-
-Test system limits:
-- High-frequency event generation
-- Maximum number of concurrent BSKTs
-- Large batch operations
-- Network congestion scenarios
-
----
-
-## Deployment Plan
-
-### Phase 1: Testnet Deployment (Base Sepolia + Ethereum Sepolia)
-
-**Week 1-2: Initial Deployment**
-1. Deploy Callback Contract on Ethereum Sepolia
-2. Deploy RSC on Reactive Network (testnet)
-3. Configure token mappings
-4. Set up event subscriptions
-
-**Week 3-4: Testing & Validation**
-1. Execute Scenario 1: BSKT Creation
-2. Execute Scenario 2: Contribution Aggregation
-3. Execute Scenario 3: Rebalancing
-4. Execute Scenarios 4-7
-5. Monitor gas costs and optimize
-
-### Phase 2: Mainnet Deployment (Base + Ethereum)
-
-**Week 5-6: Mainnet Preparation**
-1. Security audit of Callback Contract
-2. Security audit of RSC
-3. Multi-sig setup for admin functions
-4. Governance proposal for deployment
-
-**Week 7: Mainnet Launch**
-1. Deploy Callback Contract on Ethereum mainnet
-2. Deploy RSC on Reactive Network mainnet
-3. Configure production token mappings
-4. Enable event subscriptions
-5. Monitor first cross-chain operations
-
-### Phase 3: Post-Launch Monitoring
-
-**Week 8+: Operations & Optimization**
-1. 24/7 monitoring of cross-chain operations
-2. Gas optimization based on mainnet data
-3. User feedback collection
-4. Feature enhancements
-
----
-
-## Benefits Summary
-
-### For Alvara Protocol
-
-1. **Unified Liquidity**: No market fragmentation across chains
-2. **Real-time Synchronization**: Event-driven automation eliminates delays
-3. **Trustless Operation**: No centralized relayer or bridge operator
-4. **Enhanced Security**: Emergency controls propagate instantly
-5. **Better UX**: Users see combined TVL and seamless cross-chain experience
-
-### For Reactive Network
-
-1. **Showcase Use Case**: Demonstrates real-world DeFi automation
-2. **Complex Workflow**: Multiple scenarios showing RSC capabilities
-3. **High-Value Integration**: Financial protocol with significant TVL
-4. **Technical Proof**: Validates event-driven cross-chain architecture
-
-### For End Users
-
-1. **Deeper Liquidity**: Better pricing and lower slippage
-2. **Unified Portfolio View**: Single interface for multi-chain positions
-3. **Faster Operations**: No manual bridging or waiting periods
-4. **Enhanced Security**: Coordinated security measures across chains
-5. **Lower Costs**: Optimized gas usage via batched operations
-
----
-
-## Potential Challenges & Mitigations
-
-### Challenge 1: Token Address Mapping Maintenance
-
-**Issue**: New tokens added to BSKTs need manual mapping updates
-
-**Mitigation**:
-- Automated mapping discovery service
-- Community-driven mapping registry
-- Fallback to manual approval for unmapped tokens
-- Clear documentation for adding new tokens
-
-### Challenge 2: Network Congestion
-
-**Issue**: High gas costs on Ethereum during network congestion
-
-**Mitigation**:
-- Implement batch operations to amortize gas costs
-- Queue non-urgent operations for off-peak hours
-- Dynamic gas pricing based on network conditions
-- Consider L2 deployment (Arbitrum, Optimism)
-
-### Challenge 3: Event Ordering & Race Conditions
-
-**Issue**: Events may arrive out of order or simultaneously
-
-**Mitigation**:
-- Include sequence numbers in cross-chain messages
-- Implement locking mechanisms for critical operations
-- Use block numbers for ordering validation
-- Queue system for serializing operations
-
-### Challenge 4: Failed Cross-Chain Transactions
-
-**Issue**: Destination chain transaction may fail after event detection
-
-**Mitigation**:
-- Implement retry logic with exponential backoff
-- Manual intervention tools for stuck operations
-- Comprehensive logging and monitoring
-- Alerting system for failed operations
-
----
-
-## Future Enhancements
-
-### Multi-Chain Expansion
-
-**Beyond Base + Ethereum**:
-- Arbitrum
-- Optimism
-- Polygon
-- Avalanche
-- Any EVM-compatible chain
-
-**Architecture Support**:
-- RSC can subscribe to events from any EVM chain
-- Token mapping registry scales to N chains
-- Callback contracts deployed on each chain
-
-### Advanced Features
-
-1. **Cross-Chain Arbitrage Prevention**
-   - Monitor price discrepancies across chains
-   - Automatic rebalancing to maintain parity
-
-2. **Liquidity Routing Optimization**
-   - Direct contributions to chain with best pricing
-   - Automatic cross-chain rebalancing
-
-3. **Governance Coordination**
-   - Cross-chain voting aggregation
-   - Synchronized governance execution
-
-4. **Enhanced Analytics**
-   - Unified dashboard for multi-chain metrics
-   - Real-time cross-chain TVL tracking
-   - Historical performance analysis
-
----
-
-## Conclusion
-
-This PoC demonstrates how **Reactive Network's event-driven architecture** can solve Alvara Protocol's cross-chain coordination challenges without compromising on decentralization or security.
-
-**Key Achievements**:
-✅ Trustless cross-chain BSKT creation and management  
-✅ Real-time liquidity synchronization  
-✅ Coordinated rebalancing across chains  
-✅ Emergency security controls  
-✅ Unified user experience  
-✅ No centralized relayers  
-
-**Next Steps**:
-1. Review and validate architecture with Alvara team
-2. Begin RSC contract development
-3. Develop Callback Contract
-4. Execute testnet deployment
-5. Security audits
-6. Mainnet launch
-
----
-
-## Contact & Resources
-
-**Alvara Protocol**:
-- Website: [alvara.xyz](https://alvara.xyz)
-- Documentation: [docs.alvara.xyz](https://docs.alvara.xyz)
-- GitHub: [github.com/alvara-protocol](https://github.com/alvara-protocol)
-
-**Reactive Network**:
-- Website: [reactive.network](https://reactive.network)
-- Documentation: [docs.reactive.network](https://docs.reactive.network)
-- GitHub: [github.com/reactive-network](https://github.com/reactive-network)
+### 6. Gas Funding
+
+Ensure the RSC has sufficient ETH on Ethereum to execute callback transactions:
+
+**Estimated Gas Requirements per Operation**:
+- `createMirrorBSKT`: ~500k gas
+- `syncContribution`: ~150k gas
+- `syncWithdrawal`: ~150k gas
+- `rebalanceMirrorBSKT`: ~400k gas
+- `triggerFeeClaim`: ~200k gas
+- `emergencyPause`: ~100k gas
+- `syncGreylist`: ~80k gas
+
+**Recommended Initial Funding**: 0.5 - 1 ETH on Ethereum for RSC operations
 
 ---
 
@@ -988,14 +833,4 @@ event GreyListed(address indexed account);
 event RemovedFromGreyList(address indexed account);
 ```
 
----
 
-## License
-
-This documentation is provided for reference purposes for the Alvara x Reactive Network integration.
-
-**Copyright © 2024 Alvara Protocol | Reactive Network**
-
----
-
-*Last Updated: November 2024*
