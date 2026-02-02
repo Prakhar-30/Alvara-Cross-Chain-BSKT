@@ -30,15 +30,39 @@ Use a Multi-Chain Registry contract on Ethereum as the source of truth for all c
 - **BSKT Token** - Standard ERC721, holds only ALVA token (required by protocol)
 - **Modified BSKTPair** - Overrides value calculation to use registry for multi-chain baskets
 - **Multi-Chain Registry** - Stores basket configurations, vault addresses, and token balances per chain
-- **Origin Callback** - Orchestrates multi-chain operations, updates registry
+- **Origin Callback** - Orchestrates multi-chain operations, updates registry, **holds ETH before bridging**
 
 **Reactive Network:**
 - **Main RSC** - Event-driven coordinator, no state storage
-- **Bridge RSC** - Parallel operation handler for multiple destination chains
+- **Bridge RSC** - Parallel operation handler, **initiates ETH bridging to destination chains**
 
 **Base & Arbitrum (Destination Chains):**
-- **Destination Callback** - Acquires tokens via DEX, manages vault interactions
+- **Destination Callback** - **Receives bridged ETH**, acquires tokens via local DEX, manages vault interactions
 - **Token Vault** - Per-basket secure storage, emits lock/unlock events
+
+### ETH Flow Architecture
+
+**Critical Understanding: Where Does Liquidity Come From?**
+
+1. **User sends ETH to Factory on Ethereum** (e.g., 1 ETH)
+2. **Factory transfers ETH to Origin Callback** (after fee: 0.995 ETH)
+3. **Origin Callback holds ETH**, waiting for Reactive coordination
+4. **Bridge RSC initiates native bridges:**
+   - Uses Base's official bridge to send 0.4975 ETH from Origin Callback → BaseCallback
+   - Uses Arbitrum's official bridge to send 0.4975 ETH from Origin Callback → ArbitrumCallback
+   - These are standard cross-chain ETH transfers (~10-20 min)
+5. **Destination Callbacks receive ETH on their respective chains:**
+   - BaseCallback now has 0.4975 ETH **on Base network**
+   - ArbitrumCallback now has 0.4975 ETH **on Arbitrum network**
+6. **Destination Callbacks swap on local DEXs:**
+   - BaseCallback swaps ETH for USDe on **Base's Uniswap** (using Base's liquidity pools)
+   - ArbitrumCallback swaps ETH for ARB on **Arbitrum's Uniswap** (using Arbitrum's liquidity pools)
+7. **No need to maintain our own liquidity** - we use existing DEX ecosystems on each chain
+
+**Key Point:** We don't need liquidity pools. We use:
+- Native bridges (Base bridge, Arbitrum bridge) for ETH transfers
+- Existing DEXs (Uniswap on Base, Uniswap on Arbitrum) for swaps
+- Existing liquidity providers on those chains
 
 ---
 
@@ -226,7 +250,7 @@ baskets[bsktAddress] = {
 }
 ```
 
-#### Step 4: Reactive Network Coordinates Token Acquisition
+#### Step 4: Reactive Network Bridges ETH & Coordinates Token Acquisition
 **Main RSC detects BSKTCreated → triggers Bridge RSC**
 
 **Bridge RSC Logic:**
@@ -237,14 +261,20 @@ react(event BSKTCreated) {
     bskt = event.bsktAddress
     tokens = event.tokens
     chains = event.chains
-    ethAmount = event.ethAmount
+    ethAmount = event.ethAmount  // 0.995 ETH held in Origin Callback
     
     // Calculate ETH allocation per chain based on weights
     // For 0.995 ETH with 50/50 split:
     baseAllocation = 0.995 * 0.50 = 0.4975 ETH
     arbAllocation = 0.995 * 0.50 = 0.4975 ETH
     
-    // Trigger parallel operations on destination chains
+    // Step 1: Bridge ETH from Ethereum to destination chains
+    await Promise.all([
+        bridgeETH(1, 8453, baseAllocation, BaseCallback),      // Ethereum → Base
+        bridgeETH(1, 42161, arbAllocation, ArbitrumCallback)   // Ethereum → Arbitrum
+    ])
+    
+    // Step 2: Once ETH arrives, trigger token acquisition on destination chains
     await Promise.all([
         BaseCallback.acquireTokens(bskt, USDe, 0.4975),
         ArbitrumCallback.acquireTokens(bskt, ARB, 0.4975)
@@ -253,22 +283,55 @@ react(event BSKTCreated) {
 ```
 
 **What Happens:**
-- Bridge RSC calculates how much ETH goes to each chain based on weights
-- Triggers destination callbacks in parallel (not sequential)
-- Waits for all `TokensLocked` events before proceeding
+
+1. **Origin Callback Holds ETH:**
+   - After Factory deducts fee, 0.995 ETH sits in Origin Callback contract
+   - This ETH needs to be moved to Base and Arbitrum
+
+2. **Bridge RSC Initiates Bridges:**
+   - Uses native bridges (e.g., Base's official bridge, Arbitrum's bridge)
+   - Or uses cross-chain messaging protocols (Axelar, LayerZero, etc.)
+   - Sends 0.4975 ETH to BaseCallback contract on Base
+   - Sends 0.4975 ETH to ArbitrumCallback contract on Arbitrum
+   - These are standard cross-chain transfers (takes ~10-20 minutes)
+
+3. **Destination Callbacks Receive ETH:**
+   - BaseCallback on Base receives 0.4975 ETH
+   - ArbitrumCallback on Arbitrum receives 0.4975 ETH
+   - Now they have liquidity to swap on local DEXs
+
+4. **Bridge RSC Waits for Confirmations:**
+   - Detects ETH arrival events on destination chains
+   - Only then triggers token acquisition
+   - Ensures atomicity: no tokens bought without ETH present
 
 #### Step 5: Destination Callbacks Acquire Tokens
 
 **On Base - Function Called:** `BaseCallback.acquireTokens(bskt, token, ethAmount)`
 
+**Prerequisites:**
+- BaseCallback has received 0.4975 ETH via bridge from Ethereum
+- ETH is now on Base chain, ready to use on Base's DEXs (Uniswap, Aerodrome, etc.)
+
 **What Happens:**
 
-1. **Swap ETH for Token:**
+1. **Swap ETH for Token on Local DEX:**
    ```solidity
-   // Use Uniswap/DEX to swap ETH → USDe
+   // BaseCallback now has ETH on Base
+   // Use Base's Uniswap/DEX to swap ETH → USDe
    uint256 usdReceived = swapExactETHForTokens(
        0.4975 ether,
        [WETH, USDe],
+       minAmountOut
+   );
+   // Receives ~500 USDe (depending on Base DEX price)
+   ```
+   
+   **Where's the Liquidity?**
+   - Base has its own Uniswap V2/V3 deployment with USDe/WETH pools
+   - These pools are maintained by Base ecosystem liquidity providers
+   - We're swapping on Base's local DEX, not Ethereum's DEX
+   - No need to maintain our own liquidity - we use existing DEX liquidity
        minAmountOut
    );
    // Receives ~500 USDe (depending on price)
@@ -568,7 +631,15 @@ function contribute(uint256[] calldata minAmountsOut) external payable {
 react(event ContributionAllocated) {
     const allocations = event.allocations;
     
-    // Trigger parallel acquisition
+    // Step 1: Bridge ETH from Ethereum to destination chains
+    await Promise.all(
+        allocations.map(async (alloc) => {
+            // Bridge ETH from Origin Callback to Destination Callback
+            await bridgeETH(1, alloc.chain, alloc.amount, callbacks[alloc.chain]);
+        })
+    );
+    
+    // Step 2: Once ETH arrives, trigger token acquisition
     await Promise.all(
         allocations.map(async (alloc) => {
             if (alloc.chain === 8453) {
@@ -588,6 +659,12 @@ react(event ContributionAllocated) {
     );
 }
 ```
+
+**What Happens:**
+- Origin Callback holds the contribution ETH (0.4975 ETH)
+- Bridge RSC bridges ETH to destination chains (0.24875 ETH each)
+- Waits for ETH arrival confirmations
+- Then triggers token acquisition on local DEXs
 
 #### Step 4: Destination Callbacks Acquire Additional Tokens
 
