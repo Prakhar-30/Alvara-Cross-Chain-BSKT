@@ -33,14 +33,16 @@ Where:
 ### 2.2 Callback Contract (Sepolia)
 
 ```
-Callback Cost = Pbase × C × (Gcallback + K)
+Callback Cost = Pbase × Gcallback
 
 Where:
 - Pbase     : 1,762,615 wei (~0.00176 gwei) — live Sepolia base fee
-- C         : Pricing coefficient for Sepolia  ← STILL UNKNOWN
+- C         : 1  ✅
+- K         : 0  ✅
 - Gcallback : Gas consumed during callback execution
-- K         : Fixed gas surcharge for Sepolia  ← STILL UNKNOWN
 - Unit      : ETH
+
+Simplifies to: standard gas cost — no markup, no surcharge.
 ```
 
 ### 2.3 Known Constants
@@ -52,9 +54,11 @@ Where:
 | Event read in USD | $0.0001138 |
 | Lasna BaseFee (B) | **1e11 wei REACT = 1e-7 REACT/gas** ✅ |
 | Sepolia base fee (Pbase) | **1,762,615 wei (~0.00176 gwei)** ✅ |
-| Assumed ETH price | $2,500 |
+| Sepolia coefficient C | **1** ✅ |
+| Sepolia surcharge K | **0** ✅ |
+| Assumed ETH price | $2,100 |
 
-> **⚠️ Remaining unknowns:** Sepolia coefficient C and surcharge K are still needed for exact callback cost in ETH. The ETH cost estimates below use the live Sepolia Pbase; they will be multiplied by C×(G+K) once C and K are provided.
+> **All unknowns resolved.** Callback cost = Pbase × Gcallback (no markup, no surcharge). Full USD costs are calculable end-to-end.
 
 ---
 
@@ -379,19 +383,26 @@ Total REACT   = 0.041 REACT = $0.001085
 
 ---
 
-## 8. Remaining Unknowns
+## 8. All Unknowns Resolved ✅
 
-| Unknown | Used In | How to Find |
-|---------|---------|-------------|
-| Sepolia coefficient `C` | Callback Cost = Pbase × C × (G + K) | Reactive Network documentation or team |
-| Sepolia fixed surcharge `K` | Same formula | Same source |
-| Callback emission rate (per byte/word) | Precise emission REACT cost | Reactive documentation |
+All parameters are now known. Full per-operation ETH callback costs (C=1, K=0, Pbase=0.00176 gwei, ETH=$2,500):
 
-**Once C and K are known, full ETH callback cost:**
+| Operation | Approach 1 Gas | Approach 1 ETH $ | Approach 2 Gas | Approach 2 ETH $ |
+|-----------|---------------|-----------------|----------------|-----------------|
+| Creation | 1,230,000 | **$0.00454** | 1,700,000 | **$0.00628** |
+| Contribution | 330,000 | **$0.00122** | 400,000 | **$0.00148** |
+| Withdrawal | 380,000 | **$0.00140** | 360,000 | **$0.00133** |
+| Rebalance | 510,000 | **$0.00188** | 570,000 | **$0.00211** |
+
+**Full lifecycle cost per user (Approach 1 — 1 creation + 3 contributions + 1 withdrawal + 2 rebalances):**
 ```
-Approach 1 Creation callback cost = 0.00176 gwei × C × (1,230,000 + K) ETH
-Approach 2 Creation callback cost = 0.00176 gwei × C × (1,700,000 + K) ETH
+ETH callbacks : $0.00454 + (3 × $0.00122) + $0.00140 + (2 × $0.00188) = $0.01336
+REACT total   : 0.066 + (3 × 0.046) + 0.048 + (2 × 0.031) = 0.314 REACT = $0.0083
+─────────────────────────────────────────────────────────────────────────────
+Total Reactive infrastructure cost per user lifecycle = ~$0.0217
 ```
+
+> Alvara's total Reactive overhead per user is **~$0.022**. A $5–10 crosschain BSKT fee is not covering Reactive costs — those are negligible. The fee would be covering user-side Ethereum mainnet gas and bridging costs, which at mainnet prices (10–30 gwei) dominate entirely.
 
 ---
 
